@@ -1,7 +1,14 @@
-# รายการงาน (Tasks) - LINE Flex Messages Upgrade
+# รายการงาน (Tasks) - Personalized Calorie Limit & Onboarding
 
-- [x] ปรับปรุงฟังก์ชัน `replyLineMessage` ให้รองรับ Object (Flex Message)
-- [x] พัฒนาฟังก์ชัน `createFoodCalorieFlex(foodMenu, calories)` เพื่อสร้างโครงสร้างการ์ดแคลลอรี่อาหารรายเมนู
-- [x] พัฒนาฟังก์ชัน `createSummaryFlex(todayMeals, totalCalories)` เพื่อสร้างโครงสร้างการ์ดสรุปยอดสะสมรายวัน
-- [x] ปรับปรุงการทำงานใน `doPost` และ `getTodayCaloriesSummary` เพื่อประกอบและส่งคืน Flex Messages แทน Text ธรรมดา
-- [x] ทำการทดสอบและอัปเดตผลใน walkthrough.md
+- [x] เขียนฟังก์ชันคำนวณอายุจำเพาะบุคคล `calculateAge(birthDateStr)`
+- [x] เขียนฟังก์ชันกำหนดแคลลอรี่สูงสุดของเพศและอายุอ้างอิงตารางการแพทย์ `getMaxCalories(age, gender)`
+- [x] พัฒนาฟังก์ชันอ่านและจัดการโปรไฟล์ใน Google Sheet `getUserProfile(userId)` และ `saveUserProfile(userId, birthDate, gender)`
+- [x] ออกแบบและเขียนฟังก์ชันสร้าง Onboarding Flex Messages:
+  - [x] `askGenderFlex()` การ์ดเลือกเพศสภาพ (ชาย/หญิง)
+  - [x] `askBirthDateFlex(gender)` การ์ดเลือกวันเกิด (LINE Native DatePicker)
+  - [x] `welcomeProfileFlex(age, gender, maxCalories)` การ์ดต้อนรับเมื่อสมัครข้อมูลสำเร็จ
+- [x] เพิ่มระบบจัดการและสลับการรันเหตุการณ์ใน `doPost(e)`:
+  - [x] แยกเหตุการณ์ประเภท `postback` (การลงทะเบียนโปรไฟล์ขั้นตอนที่ 1 และ 2)
+  - [x] ตรวจเช็คสิทธิ์โปรไฟล์ในคำถามปกติ (หากไม่มีให้สลับไปส่ง Onboarding Card)
+- [x] ปรับปรุงการ์ดสรุปสะสมประจำวัน `createSummaryFlex` เพื่อคำนวณพลังงานคงเหลือ/พลังงานเกิน และแสดงสไตล์สีเขียว/แดงไดนามิก
+- [/] ทำการทดสอบและสรุปประวัติใน walkthrough.md

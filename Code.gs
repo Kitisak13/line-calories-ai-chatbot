@@ -103,21 +103,33 @@ function doPost(e) {
         "INFO",
       );
 
+      if (!userId) {
+        replyLineMessage(replyToken, "ขออภัยค่ะ ระบบไม่สามารถตรวจสอบข้อมูล User ID ของคุณได้ในขณะนี้");
+        return ContentService.createTextOutput("OK").setMimeType(ContentService.MimeType.TEXT);
+      }
+
+      // 1. ตรวจสอบข้อมูลโปรไฟล์ผู้ใช้งานก่อน
+      const userProfile = getUserProfile(userId);
+      if (!userProfile) {
+        writeLog(`ไม่พบข้อมูลโปรไฟล์สำหรับ User ID: ${userId} -> ส่งกล่องสมัครโปรไฟล์`, "INFO");
+        const onboardingCard = askGenderFlex();
+        replyLineMessage(replyToken, onboardingCard);
+        
+        return ContentService.createTextOutput("OK").setMimeType(ContentService.MimeType.TEXT);
+      }
+
+      // 2. หากมีโปรไฟล์แล้ว ประมวลผลข้อความตามปกติ
       let aiResponse = "";
       if (isSummaryRequest(userMessage)) {
-        if (!userId) {
-          aiResponse = "ขออภัยค่ะ ระบบไม่สามารถระบุ User ID ของคุณได้ จึงไม่สามารถดึงข้อมูลประวัติแคลลอรี่ให้ได้ในขณะนี้";
-        } else {
-          writeLog(`ตรวจพบคำสั่งขอสรุปแคลลอรี่รายวันสำหรับ User ID: ${userId}`, "INFO");
-          aiResponse = getTodayCaloriesSummary(userId);
-        }
+        writeLog(`ตรวจพบคำสั่งขอสรุปแคลลอรี่รายวันสำหรับ User ID: ${userId}`, "INFO");
+        aiResponse = getTodayCaloriesSummary(userId, userProfile);
       } else {
-        // 1. เรียกใช้งาน Google Gemini API เพื่อประมวลผลข้อมูล
+        // เรียกใช้งาน Google Gemini API เพื่อประมวลผลข้อมูล
         aiResponse = callGemini(userMessage);
         writeLog(`คำตอบที่ได้จาก Gemini: "${aiResponse}"`, "INFO");
 
-        // 2. บันทึกข้อมูลลง Google Sheet หากคำนวณแคลลอรี่สำเร็จ และเปลี่ยนการตอบกลับเป็น Flex Message
-        if (userId && aiResponse.indexOf("Calories: ") === 0) {
+        // บันทึกข้อมูลลง Google Sheet หากคำนวณแคลลอรี่สำเร็จ และเปลี่ยนการตอบกลับเป็น Flex Message
+        if (aiResponse.indexOf("Calories: ") === 0) {
           const caloriesStr = aiResponse.replace("Calories: ", "").trim();
           const caloriesNum = parseFloat(caloriesStr) || 0;
           saveToSheet(userId, userMessage, caloriesNum);
@@ -129,9 +141,46 @@ function doPost(e) {
 
       // 3. ส่งข้อความตอบกลับไปยัง LINE Messaging API
       replyLineMessage(replyToken, aiResponse);
+    } else if (event.type === "postback") {
+      const replyToken = event.replyToken;
+      const userId = event.source && event.source.userId ? event.source.userId : "";
+      const postbackData = event.postback.data;
+      const params = parseQueryString(postbackData);
+      
+      writeLog(`ได้รับ Event Postback: "${postbackData}" | UserID: ${userId} | Reply Token: ${replyToken}`, "INFO");
+      
+      if (!userId) {
+        replyLineMessage(replyToken, "ขออภัยค่ะ ระบบไม่สามารถตรวจสอบข้อมูล User ID ของคุณผ่านปุ่มกดได้ในขณะนี้");
+        return ContentService.createTextOutput("OK").setMimeType(ContentService.MimeType.TEXT);
+      }
+
+      if (params.action === "select_gender") {
+        const gender = params.gender;
+        const nextCard = askBirthDateFlex(gender);
+        replyLineMessage(replyToken, nextCard);
+      } 
+      else if (params.action === "register_profile") {
+        const gender = params.gender;
+        const birthDate = event.postback.params && event.postback.params.date ? event.postback.params.date : "";
+        
+        if (!birthDate) {
+          replyLineMessage(replyToken, "ขออภัยค่ะ ระบบไม่พบข้อมูลวันเกิดที่เลือก กรุณากดปุ่มเพื่อลองเลือกใหม่อีกครั้งนะคะ");
+        } else {
+          // บันทึกลงตาราง Google Sheet: UserProfiles
+          const success = saveUserProfile(userId, birthDate, gender);
+          if (success) {
+            const age = calculateAge(birthDate);
+            const maxCalories = getMaxCalories(age, gender);
+            const welcomeCard = welcomeProfileFlex(age, gender, maxCalories);
+            replyLineMessage(replyToken, welcomeCard);
+          } else {
+            replyLineMessage(replyToken, "ขออภัยค่ะ ระบบฐานข้อมูลขัดข้อง ไม่สามารถบันทึกโปรไฟล์ส่วนบุคคลของคุณได้ชั่วคราว");
+          }
+        }
+      }
     } else {
       writeLog(
-        `ข้ามการทำงาน เนื่องจาก Event ไม่ใช่ข้อความประเภท Text (Event Type: ${event.type})`,
+        `ข้ามการทำงาน เนื่องจาก Event ไม่ใช่ข้อความประเภท Text หรือ Postback (Event Type: ${event.type})`,
         "INFO",
       );
     }
@@ -386,7 +435,7 @@ function saveToSheet(userId, foodMenu, calories) {
 }
 
 // ฟังก์ชันดึงและสรุปแคลลอรี่ที่ทานไปทั้งหมดในวันนี้ของ User ID นั้นๆ
-function getTodayCaloriesSummary(userId) {
+function getTodayCaloriesSummary(userId, userProfile) {
   try {
     const scriptProperties = PropertiesService.getScriptProperties();
     const sheetId = scriptProperties.getProperty("GOOGLE_SHEET");
@@ -403,8 +452,13 @@ function getTodayCaloriesSummary(userId) {
     }
 
     const lastRow = sheet.getLastRow();
+    
+    // ดึงค่าเป้าหมายแคลลอรี่สูงสุดจำเพาะบุคคล
+    const age = calculateAge(userProfile.birthDate);
+    const maxCalories = getMaxCalories(age, userProfile.gender);
+
     if (lastRow <= 1) {
-      return "วันนี้คุณยังไม่ได้บันทึกเมนูอาหารเลยค่ะ! เริ่มต้นพิมพ์ชื่อเมนูอาหารที่ทานเพื่อบันทึกแคลลอรี่ได้เลยนะคะ 🍽️";
+      return `วันนี้คุณยังไม่ได้บันทึกเมนูอาหารเลยค่ะ! เริ่มต้นพิมพ์ชื่อเมนูอาหารที่ทานเพื่อสะสมให้ถึงเป้าหมายรายวันของคุณที่ ${maxCalories} kcal ได้เลยนะคะ 🍽️`;
     }
 
     const now = new Date();
@@ -441,11 +495,11 @@ function getTodayCaloriesSummary(userId) {
     }
     
     if (todayMeals.length === 0) {
-      return "วันนี้คุณยังไม่ได้บันทึกเมนูอาหารเลยค่ะ! เริ่มต้นพิมพ์ชื่อเมนูอาหารที่ทานเพื่อบันทึกแคลลอรี่ได้เลยนะคะ 🍽️";
+      return `วันนี้คุณยังไม่ได้บันทึกเมนูอาหารเลยค่ะ! เริ่มต้นพิมพ์ชื่อเมนูอาหารที่ทานเพื่อสะสมให้ถึงเป้าหมายรายวันของคุณที่ ${maxCalories} kcal ได้เลยนะคะ 🍽️`;
     }
     
-    // คืนค่ารูปแบบ Flex Message ดีไซน์พรีเมียม
-    return createSummaryFlex(todayMeals, totalCalories);
+    // คืนค่ารูปแบบ Flex Message ดีไซน์พรีเมียมส่วนบุคคล
+    return createSummaryFlex(todayMeals, totalCalories, maxCalories);
   } catch (error) {
     writeLog("เกิดข้อผิดพลาดในการดึงข้อมูลจากชีต: " + error.toString(), "EXCEPTION");
     sendLogsEmail();
@@ -600,20 +654,29 @@ function createFoodCalorieFlex(foodMenu, calories) {
   };
 }
 
-// ฟังก์ชันสร้างกล่องข้อความ Flex Message สำหรับสรุปรายการสะสมรายวัน
-function createSummaryFlex(todayMeals, totalCalories) {
-  let adviceColor = "#22C55E"; // Green
-  let adviceText = "✨ ยอดเยี่ยมค่ะ! วันนี้ร่างกายคุณยังรับพลังงานดีๆ เพิ่มได้อีกนะ ทานให้อิ่มและมีประโยชน์น้า!";
-  let adviceTitle = "💪 พลังงานกำลังพอดี!";
+// ฟังก์ชันสร้างกล่องข้อความ Flex Message สำหรับสรุปรายการสะสมรายวันส่วนบุคคล
+function createSummaryFlex(todayMeals, totalCalories, maxCalories) {
+  let difference = maxCalories - totalCalories;
+  let adviceColor = "#22C55E"; // Green default
+  let adviceTitle = "";
+  let adviceText = "";
   
-  if (totalCalories > 2000) {
+  if (difference > 0) {
+    // แคลลอรี่ยังไม่เกินเป้าหมาย
+    adviceColor = "#22C55E"; // Green
+    adviceTitle = `🟢 ยังทานได้อีก ${difference} kcal`;
+    adviceText = `วันนี้คุณทานไปทั้งหมด ${totalCalories} kcal จากโควต้าแนะนำสำหรับอายุและเพศของคุณที่ ${maxCalories} kcal ค่ะ เลือกรับพลังงานดีๆ ในมื้อถัดไปนะคะ! 💪`;
+  } else if (difference < 0) {
+    // แคลลอรี่เกินเป้าหมาย
+    const exceeded = Math.abs(difference);
     adviceColor = "#EF4444"; // Red
-    adviceText = "⚠️ วันนี้คุณทานแคลลอรี่เกิน 2,000 kcal แล้วนะคะ แนะนำให้จิบน้ำบ่อยๆ และเน้นอาหารประเภทผักและโปรตีนในมื้อถัดไปน้า 🏃‍♀️";
-    adviceTitle = "⚠️ พลังงานเริ่มเกินแล้วค่ะ!";
-  } else if (totalCalories >= 1500) {
+    adviceTitle = `⚠️ ทานเกินเป้าหมายไป ${exceeded} kcal`;
+    adviceText = `วันนี้ร่างกายคุณรับพลังงานเกินเป้าหมายสุขภาพส่วนบุคคล (${maxCalories} kcal) ไปแล้ว ${exceeded} kcal แนะนำเน้นกิจกรรมเดินหรือออกกำลังกายเพื่อช่วยเบิร์นแคลลอรี่ส่วนเกินออกน้า 🏃‍♀️`;
+  } else {
+    // พอดีพอดีเป๊ะ
     adviceColor = "#F97316"; // Orange
-    adviceText = "💪 รักษาระดับแคลลอรี่ได้ดีมากค่ะ ใกล้ถึงเกณฑ์เป้าหมายของวันแล้ว เลือกทานอาหารที่ดีต่อสุขภาพต่อนะคะ!";
-    adviceTitle = "🔥 ใกล้ถึงขีดเป้าหมาย!";
+    adviceTitle = "🎯 ทานครบถ้วนพอดีเป้าหมาย!";
+    adviceText = `ยอดเยี่ยมมากค่ะ! วันนี้คุณทานสะสมพลังงานได้ครบถ้วนเท่ากับขีดจำกัดสูงสุด ${maxCalories} kcal พอดิบพอดี รักษาวินัยที่ยอดเยี่ยมนี้ต่อนะคะ! ✨`;
   }
 
   // สร้างรายการอาหารแบบตารางไดนามิก
@@ -636,7 +699,7 @@ function createSummaryFlex(todayMeals, totalCalories) {
           "text": `${todayMeals[i].calories} kcal`,
           "size": "sm",
           "color": "#666666",
-          "align": "end",
+          "align": "right",
           "flex": 2,
           "weight": "bold"
         }
@@ -655,7 +718,7 @@ function createSummaryFlex(todayMeals, totalCalories) {
 
   return {
     "type": "flex",
-    "altText": `สรุปโภชนาการวันนี้: ${totalCalories} kcal`,
+    "altText": `สรุปโภชนาการวันนี้: ${totalCalories}/${maxCalories} kcal`,
     "contents": {
       "type": "bubble",
       "header": {
@@ -703,9 +766,8 @@ function createSummaryFlex(todayMeals, totalCalories) {
               },
               {
                 "type": "text",
-                "text": "kcal",
-                "size": "sm",
-                "weight": "bold",
+                "text": `จากเป้าหมาย ${maxCalories} kcal`,
+                "size": "xs",
                 "color": "#8C8C8C",
                 "align": "center",
                 "margin": "none"
@@ -759,6 +821,455 @@ function createSummaryFlex(todayMeals, totalCalories) {
             "paddingAll": "md",
             "backgroundColor": "#F9F9F9",
             "cornerRadius": "sm"
+          }
+        ],
+        "paddingAll": "lg"
+      }
+    }
+  };
+}
+
+// ฟังก์ชันแยกแยะพารามิเตอร์ประเภท Query String (ข้อมูล Postback จาก LINE)
+function parseQueryString(queryString) {
+  let params = {};
+  if (!queryString) return params;
+  const pairs = queryString.split("&");
+  for (let i = 0; i < pairs.length; i++) {
+    const pair = pairs[i].split("=");
+    params[decodeURIComponent(pair[0])] = decodeURIComponent(pair[1] || "");
+  }
+  return params;
+}
+
+// ฟังก์ชันอ่านข้อมูลโปรไฟล์ผู้ใช้จากตาราง UserProfiles
+function getUserProfile(userId) {
+  try {
+    const scriptProperties = PropertiesService.getScriptProperties();
+    const sheetId = scriptProperties.getProperty("GOOGLE_SHEET");
+    if (!sheetId) {
+      writeLog("ไม่พบตัวแปร GOOGLE_SHEET ใน Script Properties", "ERROR");
+      return null;
+    }
+    
+    const spreadsheet = SpreadsheetApp.openById(sheetId.trim());
+    const sheet = spreadsheet.getSheetByName("UserProfiles");
+    if (!sheet) {
+      writeLog("ไม่พบแผ่นงานชื่อ 'UserProfiles' ใน Google Sheets", "ERROR");
+      return null;
+    }
+    
+    const lastRow = sheet.getLastRow();
+    if (lastRow <= 1) {
+      return null;
+    }
+    
+    const data = sheet.getRange(2, 1, lastRow - 1, 3).getValues(); // ดึง UserID, BirthDate, Gender
+    for (let i = 0; i < data.length; i++) {
+      const row = data[i];
+      if (String(row[0]).trim() === userId.trim()) {
+        let birthDateStr = "";
+        const dateVal = row[1];
+        if (dateVal instanceof Date) {
+          birthDateStr = Utilities.formatDate(dateVal, "Asia/Bangkok", "yyyy-MM-dd");
+        } else {
+          birthDateStr = String(dateVal).trim();
+        }
+        
+        return {
+          userId: String(row[0]).trim(),
+          birthDate: birthDateStr,
+          gender: String(row[2]).trim()
+        };
+      }
+    }
+    return null;
+  } catch (error) {
+    writeLog("เกิดข้อผิดพลาดในการดึงประวัติผู้ใช้งาน: " + error.toString(), "EXCEPTION");
+    return null;
+  }
+}
+
+// ฟังก์ชันบันทึกโปรไฟล์ผู้ใช้งานใหม่ลงในตาราง UserProfiles
+function saveUserProfile(userId, birthDate, gender) {
+  try {
+    const scriptProperties = PropertiesService.getScriptProperties();
+    const sheetId = scriptProperties.getProperty("GOOGLE_SHEET");
+    if (!sheetId) {
+      writeLog("ไม่พบตัวแปร GOOGLE_SHEET ใน Script Properties", "ERROR");
+      return false;
+    }
+    
+    const spreadsheet = SpreadsheetApp.openById(sheetId.trim());
+    const sheet = spreadsheet.getSheetByName("UserProfiles");
+    if (!sheet) {
+      writeLog("ไม่พบแผ่นงานชื่อ 'UserProfiles' ใน Google Sheets", "ERROR");
+      return false;
+    }
+    
+    const now = new Date();
+    const registeredAt = Utilities.formatDate(now, "Asia/Bangkok", "yyyy-MM-dd HH:mm:ss");
+    
+    // เขียนแถวข้อมูลใหม่ลงชีต
+    sheet.appendRow([userId.trim(), birthDate.trim(), gender.trim(), registeredAt]);
+    writeLog(`[Sheet บันทึกโปรไฟล์] User: ${userId} | BirthDate: ${birthDate} | Gender: ${gender}`, "INFO");
+    return true;
+  } catch (error) {
+    writeLog("เกิดข้อผิดพลาดในการบันทึกโปรไฟล์ผู้ใช้: " + error.toString(), "EXCEPTION");
+    return false;
+  }
+}
+
+// ฟังก์ชันคำนวณอายุของผู้ใช้งานจากวันเกิด (ปีเกิดและเปรียบเทียบเดือน/วันปัจจุบัน)
+function calculateAge(birthDateStr) {
+  try {
+    const birthDate = new Date(birthDateStr);
+    const today = new Date();
+    let age = today.getFullYear() - birthDate.getFullYear();
+    const m = today.getMonth() - birthDate.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) {
+      age--;
+    }
+    return age;
+  } catch (e) {
+    writeLog("ไม่สามารถคำนวณอายุจาก " + birthDateStr + " ได้: " + e.toString(), "WARN");
+    return 30; // ส่งค่าเฉลี่ยวัยทำงานเป็นค่าเริ่มต้นกรณีฉุกเฉิน
+  }
+}
+
+// ฟังก์ชันกำหนดจำนวนพลังงานแคลลอรี่สูงสุดรายวัน (Max Calories) อ้างอิงตามเกณฑ์แพทย์และช่วงวัย
+function getMaxCalories(age, gender) {
+  const isMale = (gender === "ชาย" || gender === "male");
+  
+  if (age >= 4 && age <= 8) {
+    return isMale ? 1400 : 1200;
+  } else if (age >= 9 && age <= 13) {
+    return isMale ? 1800 : 1600;
+  } else if (age >= 14 && age <= 18) {
+    return isMale ? 2200 : 1800;
+  } else if (age >= 19 && age <= 30) {
+    return isMale ? 2400 : 2000;
+  } else if (age >= 31 && age <= 50) {
+    return isMale ? 2200 : 1800;
+  } else if (age >= 51) {
+    return isMale ? 2000 : 1600;
+  } else {
+    // เด็กเล็กอายุต่ำกว่า 4 ปี หรือกรณีนอกเหนือตาราง
+    return isMale ? 1400 : 1200;
+  }
+}
+
+// ฟังก์ชันส่งการ์ด Flex Message ถามเพศสภาพของผู้ใช้งาน (ขั้นตอนที่ 1/2)
+function askGenderFlex() {
+  return {
+    "type": "flex",
+    "altText": "กรุณาตั้งค่าโปรไฟล์เพื่อเริ่มใช้งานบอทแคลลอรี่",
+    "contents": {
+      "type": "bubble",
+      "header": {
+        "type": "box",
+        "layout": "vertical",
+        "contents": [
+          {
+            "type": "text",
+            "text": "ตั้งค่าโปรไฟล์ 🤖 (ขั้นตอนที่ 1/2)",
+            "weight": "bold",
+            "color": "#FFFFFF",
+            "size": "sm",
+            "align": "center"
+          }
+        ],
+        "background": {
+          "type": "linearGradient",
+          "angle": "135deg",
+          "startColor": "#4A00E0",
+          "endColor": "#8E2DE2"
+        },
+        "paddingAll": "md"
+      },
+      "body": {
+        "type": "box",
+        "layout": "vertical",
+        "contents": [
+          {
+            "type": "text",
+            "text": "ยินดีต้อนรับสู่ LINE Calories AI! เพื่อความแม่นยำในการแนะนำพลังงานโภชนาการที่เหมาะสมกับสุขภาพของคุณ กรุณาตั้งค่าข้อมูลโปรไฟล์สั้นๆ ดังนี้ค่ะ:",
+            "size": "xs",
+            "color": "#666666",
+            "wrap": true
+          },
+          {
+            "type": "separator",
+            "margin": "md"
+          },
+          {
+            "type": "text",
+            "text": "กรุณาเลือกเพศสภาพของคุณ:",
+            "weight": "bold",
+            "size": "sm",
+            "color": "#333333",
+            "margin": "lg"
+          }
+        ],
+        "paddingAll": "lg"
+      },
+      "footer": {
+        "type": "box",
+        "layout": "horizontal",
+        "spacing": "md",
+        "contents": [
+          {
+            "type": "button",
+            "style": "primary",
+            "color": "#4A00E0",
+            "height": "sm",
+            "action": {
+              "type": "postback",
+              "label": "เพศชาย 🧑",
+              "data": "action=select_gender&gender=ชาย"
+            }
+          },
+          {
+            "type": "button",
+            "style": "primary",
+            "color": "#E91E63",
+            "height": "sm",
+            "action": {
+              "type": "postback",
+              "label": "เพศหญิง 👩",
+              "data": "action=select_gender&gender=หญิง"
+            }
+          }
+        ],
+        "paddingAll": "md"
+      }
+    }
+  };
+}
+
+// ฟังก์ชันส่งการ์ด Flex Message ถามวันเกิดโดยใช้ LINE Datetime Picker (ขั้นตอนที่ 2/2)
+function askBirthDateFlex(gender) {
+  const todayStr = Utilities.formatDate(new Date(), "Asia/Bangkok", "yyyy-MM-dd");
+  
+  return {
+    "type": "flex",
+    "altText": "กรุณาเลือกวันเกิดเพื่อวิเคราะห์สุขภาพของคุณ",
+    "contents": {
+      "type": "bubble",
+      "header": {
+        "type": "box",
+        "layout": "vertical",
+        "contents": [
+          {
+            "type": "text",
+            "text": "ตั้งค่าโปรไฟล์ 🤖 (ขั้นตอนที่ 2/2)",
+            "weight": "bold",
+            "color": "#FFFFFF",
+            "size": "sm",
+            "align": "center"
+          }
+        ],
+        "background": {
+          "type": "linearGradient",
+          "angle": "135deg",
+          "startColor": "#4A00E0",
+          "endColor": "#8E2DE2"
+        },
+        "paddingAll": "md"
+      },
+      "body": {
+        "type": "box",
+        "layout": "vertical",
+        "contents": [
+          {
+            "type": "text",
+            "text": "ได้รับข้อมูลเพศสภาพแล้วเรียบร้อยค่ะ! ขั้นตอนสุดท้ายคือการเลือกวันเกิด เพื่อคำนวณอายุและเกณฑ์แคลลอรี่ที่เหมาะสมกับตัวคุณ:",
+            "size": "xs",
+            "color": "#666666",
+            "wrap": true
+          },
+          {
+            "type": "separator",
+            "margin": "md"
+          },
+          {
+            "type": "box",
+            "layout": "horizontal",
+            "contents": [
+              {
+                "type": "text",
+                "text": "เพศที่เลือก:",
+                "size": "xs",
+                "color": "#8C8C8C",
+                "flex": 2
+              },
+              {
+                "type": "text",
+                "text": gender,
+                "size": "xs",
+                "weight": "bold",
+                "color": gender === "ชาย" ? "#4A00E0" : "#E91E63",
+                "flex": 4
+              }
+            ],
+            "margin": "md"
+          }
+        ],
+        "paddingAll": "lg"
+      },
+      "footer": {
+        "type": "box",
+        "layout": "vertical",
+        "spacing": "sm",
+        "contents": [
+          {
+            "type": "button",
+            "style": "primary",
+            "color": "#8E2DE2",
+            "height": "sm",
+            "action": {
+              "type": "datetimepicker",
+              "label": "📅 เลือกวันเกิดของคุณ",
+              "data": "action=register_profile&gender=" + gender,
+              "mode": "date",
+              "initial": "2000-01-01",
+              "max": todayStr,
+              "min": "1900-01-01"
+            }
+          }
+        ],
+        "paddingAll": "md"
+      }
+    }
+  };
+}
+
+// ฟังก์ชันส่งการ์ด Flex Message แจ้งความยินดีเมื่อสมัครโปรไฟล์สำเร็จ
+function welcomeProfileFlex(age, gender, maxCalories) {
+  return {
+    "type": "flex",
+    "altText": "ลงทะเบียนสำเร็จ ยินดีต้อนรับค่ะ!",
+    "contents": {
+      "type": "bubble",
+      "header": {
+        "type": "box",
+        "layout": "vertical",
+        "contents": [
+          {
+            "type": "text",
+            "text": "ลงทะเบียนโปรไฟล์สำเร็จ! 🎉",
+            "weight": "bold",
+            "color": "#FFFFFF",
+            "size": "sm",
+            "align": "center"
+          }
+        ],
+        "background": {
+          "type": "linearGradient",
+          "angle": "135deg",
+          "startColor": "#11998e",
+          "endColor": "#38ef7d"
+        },
+        "paddingAll": "md"
+      },
+      "body": {
+        "type": "box",
+        "layout": "vertical",
+        "contents": [
+          {
+            "type": "text",
+            "text": "บอทวิเคราะห์สุขภาพของคุณและพร้อมดูแลคุณทันทีค่ะ:",
+            "size": "xs",
+            "color": "#666666",
+            "wrap": true
+          },
+          {
+            "type": "separator",
+            "margin": "md"
+          },
+          {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+              {
+                "type": "box",
+                "layout": "horizontal",
+                "contents": [
+                  {
+                    "type": "text",
+                    "text": "เพศของคุณ:",
+                    "size": "xs",
+                    "color": "#8C8C8C",
+                    "flex": 3
+                  },
+                  {
+                    "type": "text",
+                    "text": gender,
+                    "size": "xs",
+                    "weight": "bold",
+                    "color": "#333333",
+                    "flex": 3
+                  }
+                ],
+                "margin": "sm"
+              },
+              {
+                "type": "box",
+                "layout": "horizontal",
+                "contents": [
+                  {
+                    "type": "text",
+                    "text": "อายุปัจจุบัน:",
+                    "size": "xs",
+                    "color": "#8C8C8C",
+                    "flex": 3
+                  },
+                  {
+                    "type": "text",
+                    "text": age + " ปี",
+                    "size": "xs",
+                    "weight": "bold",
+                    "color": "#333333",
+                    "flex": 3
+                  }
+                ],
+                "margin": "sm"
+              },
+              {
+                "type": "box",
+                "layout": "horizontal",
+                "contents": [
+                  {
+                    "type": "text",
+                    "text": "เป้าหมายโภชนาการ:",
+                    "size": "xs",
+                    "color": "#8C8C8C",
+                    "flex": 3
+                  },
+                  {
+                    "type": "text",
+                    "text": maxCalories + " kcal/วัน",
+                    "size": "xs",
+                    "weight": "bold",
+                    "color": "#11998e",
+                    "flex": 3
+                  }
+                ],
+                "margin": "sm"
+              }
+            ],
+            "margin": "md"
+          },
+          {
+            "type": "separator",
+            "margin": "md"
+          },
+          {
+            "type": "text",
+            "text": "พิมพ์เมนูอาหาร เช่น 'ข้าวมันไก่' เพื่อคำนวณและบันทึกประวัติ หรือพิมพ์ 'วันนี้กินไปกี่แคล' เพื่อดูผลวิเคราะห์สุขภาพส่วนบุคคลได้เลยค่ะ! 🍽️",
+            "size": "xs",
+            "color": "#8C8C8C",
+            "wrap": true,
+            "margin": "md"
           }
         ],
         "paddingAll": "lg"
