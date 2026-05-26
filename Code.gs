@@ -350,9 +350,11 @@ function replyLineMessage(replyToken, messageContent) {
 
     const url = "https://api.line.me/v2/bot/message/reply";
     
-    // ปรับเปลี่ยนตัวแปร payload ให้รองรับทั้งข้อความธรรมดา (String) และ Flex Message (Object)
+    // ปรับเปลี่ยนตัวแปร payload ให้รองรับทั้งข้อความธรรมดา (String), Flex Message (Object) และแบบอาร์เรย์หลายข้อความ (Array)
     let messagesArray = [];
-    if (typeof messageContent === "object" && messageContent !== null) {
+    if (Array.isArray(messageContent)) {
+      messagesArray = messageContent;
+    } else if (typeof messageContent === "object" && messageContent !== null) {
       messagesArray = [messageContent];
     } else {
       messagesArray = [{ type: "text", text: String(messageContent) }];
