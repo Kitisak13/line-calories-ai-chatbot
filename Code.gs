@@ -733,7 +733,7 @@ function createSummaryFlex(todayMeals, totalCalories, maxCalories) {
           "text": `${todayMeals[i].calories} kcal`,
           "size": "sm",
           "color": "#666666",
-          "align": "right",
+          "align": "end",
           "flex": 2,
           "weight": "bold"
         }
