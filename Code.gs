@@ -161,9 +161,11 @@ function doPost(e) {
       } 
       else if (params.action === "register_profile") {
         const gender = params.gender;
-        const birthDate = event.postback.params && event.postback.params.date ? event.postback.params.date : "";
+        const birthDate = extractBirthDate(event);
         
         if (!birthDate) {
+          writeLog("ไม่พบข้อมูลวันเกิด! รายละเอียด Event Postback ทั้งหมด: " + JSON.stringify(event), "ERROR");
+          sendLogsEmail(); // ส่งเมลรายงานทันทีเมื่อเกิดความผิดพลาดในการแกะข้อมูลวันเกิด เพื่อดึง payload ดิบมาวิเคราะห์
           replyLineMessage(replyToken, "ขออภัยค่ะ ระบบไม่พบข้อมูลวันเกิดที่เลือก กรุณากดปุ่มเพื่อลองเลือกใหม่อีกครั้งนะคะ");
         } else {
           // บันทึกลงตาราง Google Sheet: UserProfiles
@@ -1276,4 +1278,57 @@ function welcomeProfileFlex(age, gender, maxCalories) {
       }
     }
   };
+}
+
+// ฟังก์ชันดึงวันเกิดอย่างยืดหยุ่นและปลอดภัยจากข้อมูล Event Postback
+function extractBirthDate(event) {
+  if (!event || !event.postback) return "";
+  
+  let rawDate = "";
+  if (event.postback.params) {
+    const params = event.postback.params;
+    rawDate = params.date || params.datetime || "";
+    
+    if (!rawDate) {
+      // ลองตรวจสอบคีย์แรกสุดกรณีระบบ LINE client บางรุ่นส่งชื่อฟิลด์ต่างออกไป
+      const keys = Object.keys(params);
+      if (keys.length > 0) {
+        rawDate = params[keys[0]];
+      }
+    }
+  }
+  
+  if (!rawDate) return "";
+  
+  const dateStr = String(rawDate).trim();
+  
+  // 1. รูปแบบ yyyy-MM-dd (มาตรฐานของ LINE)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return dateStr;
+  }
+  
+  // 2. รูปแบบ yyyy-MM-ddTHH:mm
+  if (/^\d{4}-\d{2}-\d{2}T/.test(dateStr)) {
+    return dateStr.split("T")[0];
+  }
+  
+  // 3. รูปแบบ dd/MM/yyyy (เช่น 15/01/1988)
+  const dmyMatch = dateStr.match(/^(\d{2})[\/\-](\d{2})[\/\-](\d{4})$/);
+  if (dmyMatch) {
+    const day = dmyMatch[1];
+    const month = dmyMatch[2];
+    const year = dmyMatch[3];
+    return `${year}-${month}-${day}`;
+  }
+  
+  // 4. รูปแบบ yyyy/MM/dd
+  const ymdMatch = dateStr.match(/^(\d{4})[\/\-](\d{2})[\/\-](\d{2})$/);
+  if (ymdMatch) {
+    const year = ymdMatch[1];
+    const month = ymdMatch[2];
+    const day = ymdMatch[3];
+    return `${year}-${month}-${day}`;
+  }
+  
+  return dateStr; // คืนค่าข้อมูลดิบตัวเดิมกรณีคลาดเคลื่อน
 }
