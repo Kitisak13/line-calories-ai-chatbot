@@ -110,10 +110,36 @@ function doPost(e) {
 
       // 1. ตรวจสอบข้อมูลโปรไฟล์ผู้ใช้งานก่อน
       const userProfile = getUserProfile(userId);
-      if (!userProfile) {
-        writeLog(`ไม่พบข้อมูลโปรไฟล์สำหรับ User ID: ${userId} -> ส่งกล่องสมัครโปรไฟล์`, "INFO");
-        const onboardingCard = askGenderFlex();
-        replyLineMessage(replyToken, onboardingCard);
+      if (!userProfile || !userProfile.birthDate) {
+        const gender = userProfile ? userProfile.gender : "";
+        
+        // ลองตรวจสอบว่าข้อความที่ส่งมาเป็นวันเกิดในรูปแบบที่กำหนดหรือไม่ (Text Fallback)
+        const typedBirthDate = extractBirthDateFromString(userMessage);
+        if (typedBirthDate && gender) {
+          writeLog(`ตรวจพบวันเกิดพิมพ์ตรงจากแชท: ${typedBirthDate} สำหรับ User: ${userId}`, "INFO");
+          const success = saveUserProfile(userId, typedBirthDate, gender);
+          if (success) {
+            const age = calculateAge(typedBirthDate);
+            const maxCalories = getMaxCalories(age, gender);
+            const welcomeCard = welcomeProfileFlex(age, gender, maxCalories);
+            replyLineMessage(replyToken, welcomeCard);
+          } else {
+            replyLineMessage(replyToken, "ขออภัยค่ะ ระบบฐานข้อมูลขัดข้อง ไม่สามารถบันทึกโปรไฟล์ส่วนบุคคลของคุณได้ชั่วคราว");
+          }
+          return ContentService.createTextOutput("OK").setMimeType(ContentService.MimeType.TEXT);
+        }
+        
+        if (!gender) {
+          writeLog(`ไม่พบข้อมูลโปรไฟล์สำหรับ User ID: ${userId} -> ส่งกล่องสมัครโปรไฟล์`, "INFO");
+          const onboardingCard = askGenderFlex();
+          replyLineMessage(replyToken, onboardingCard);
+        } else {
+          writeLog(`มีเพศ (${gender}) แล้วแต่ยังไม่มีวันเกิดสำหรับ User: ${userId} -> ส่งปุ่มเลือกวันเกิดและแนะนำการพิมพ์ตรง`, "INFO");
+          const nextCard = askBirthDateFlex(gender);
+          const fallbackText = "⚠️ อุปกรณ์ของคุณอาจไม่รองรับหน้าต่างเลือกวันเกิดอัตโนมัติ (เช่น LINE Desktop)\n\n👉 คุณสามารถพิมพ์วันเกิดของคุณลงในแชทนี้ได้โดยตรงเลยค่ะ\n\n📌 รูปแบบ ค.ศ.: วัน/เดือน/ปีเกิด (เช่น 15/01/1988 หรือ 1988-01-15)";
+          
+          replyLineMessage(replyToken, [nextCard, { type: "text", text: fallbackText }]);
+        }
         
         return ContentService.createTextOutput("OK").setMimeType(ContentService.MimeType.TEXT);
       }
@@ -156,17 +182,21 @@ function doPost(e) {
 
       if (params.action === "select_gender") {
         const gender = params.gender;
+        writeLog(`ผู้ใช้เลือกเพศ: ${gender} | บันทึกเพศแบบกึ่ง stateless`, "INFO");
+        saveUserProfile(userId, "", gender); // บันทึกเพศเก็บไว้ก่อนเพื่อรอดึงวันเกิดในขั้นตอนต่อไป
         const nextCard = askBirthDateFlex(gender);
-        replyLineMessage(replyToken, nextCard);
+        const fallbackText = "⚠️ อุปกรณ์ของคุณอาจไม่รองรับหน้าต่างเลือกวันเกิดอัตโนมัติ (เช่น LINE Desktop)\n\n👉 คุณสามารถพิมพ์วันเกิดของคุณลงในแชทนี้ได้โดยตรงเลยค่ะ\n\n📌 รูปแบบ ค.ศ.: วัน/เดือน/ปีเกิด (เช่น 15/01/1988 หรือ 1988-01-15)";
+        
+        replyLineMessage(replyToken, [nextCard, { type: "text", text: fallbackText }]);
       } 
       else if (params.action === "register_profile") {
         const gender = params.gender;
         const birthDate = extractBirthDate(event);
         
         if (!birthDate) {
-          writeLog("ไม่พบข้อมูลวันเกิด! รายละเอียด Event Postback ทั้งหมด: " + JSON.stringify(event), "ERROR");
-          sendLogsEmail(); // ส่งเมลรายงานทันทีเมื่อเกิดความผิดพลาดในการแกะข้อมูลวันเกิด เพื่อดึง payload ดิบมาวิเคราะห์
-          replyLineMessage(replyToken, "ขออภัยค่ะ ระบบไม่พบข้อมูลวันเกิดที่เลือก กรุณากดปุ่มเพื่อลองเลือกใหม่อีกครั้งนะคะ");
+          writeLog("ไม่พบข้อมูลวันเกิด (อาจเป็น LINE Desktop)! แสดงคู่มือพิมพ์วันเกิดด้วยตนเอง", "INFO");
+          const fallbackText = "⚠️ อุปกรณ์ของคุณไม่รองรับหน้าต่างเลือกวันเกิดอัตโนมัติ (เช่น LINE Desktop)\n\n👉 คุณสามารถพิมพ์วันเกิดของคุณลงในแชทนี้ได้โดยตรงเลยค่ะ\n\n📌 รูปแบบ ค.ศ.: วัน/เดือน/ปีเกิด (เช่น 15/01/1988 หรือ 1988-01-15)";
+          replyLineMessage(replyToken, fallbackText);
         } else {
           // บันทึกลงตาราง Google Sheet: UserProfiles
           const success = saveUserProfile(userId, birthDate, gender);
@@ -891,7 +921,7 @@ function getUserProfile(userId) {
   }
 }
 
-// ฟังก์ชันบันทึกโปรไฟล์ผู้ใช้งานใหม่ลงในตาราง UserProfiles
+// ฟังก์ชันบันทึกโปรไฟล์ผู้ใช้งานลงในตาราง UserProfiles (รองรับการ Upsert เพื่อไม่ให้เกิดแถวซ้ำ)
 function saveUserProfile(userId, birthDate, gender) {
   try {
     const scriptProperties = PropertiesService.getScriptProperties();
@@ -911,9 +941,40 @@ function saveUserProfile(userId, birthDate, gender) {
     const now = new Date();
     const registeredAt = Utilities.formatDate(now, "Asia/Bangkok", "yyyy-MM-dd HH:mm:ss");
     
-    // เขียนแถวข้อมูลใหม่ลงชีต
-    sheet.appendRow([userId.trim(), birthDate.trim(), gender.trim(), registeredAt]);
-    writeLog(`[Sheet บันทึกโปรไฟล์] User: ${userId} | BirthDate: ${birthDate} | Gender: ${gender}`, "INFO");
+    const lastRow = sheet.getLastRow();
+    let userRowIndex = -1;
+    
+    // ค้นหาว่าผู้ใช้นี้เคยมีข้อมูลแถวเดิมหรือไม่
+    if (lastRow > 1) {
+      const data = sheet.getRange(2, 1, lastRow - 1, 1).getValues(); // ดึงคอลัมน์ UserID ทั้งหมด
+      for (let i = 0; i < data.length; i++) {
+        if (String(data[i][0]).trim() === userId.trim()) {
+          userRowIndex = i + 2; // แปลงเป็น index แบบ 1-based (รวม Header)
+          break;
+        }
+      }
+    }
+    
+    if (userRowIndex !== -1) {
+      // ถ้าพบข้อมูลเดิม ให้ทำการอัปเดตค่าเฉพาะฟิลด์ที่ส่งเข้ามา (หากส่งค่าว่าง ให้คงค่าเดิม ยกเว้นต้องการล้างค่า)
+      // คอลัมน์: 1=UserID, 2=BirthDate, 3=Gender, 4=RegisteredAt
+      
+      const currentBirthDate = sheet.getRange(userRowIndex, 2).getValue();
+      const currentGender = sheet.getRange(userRowIndex, 3).getValue();
+      
+      const finalBirthDate = (birthDate !== undefined && birthDate !== "") ? birthDate.trim() : currentBirthDate;
+      const finalGender = (gender !== undefined && gender !== "") ? gender.trim() : currentGender;
+      
+      sheet.getRange(userRowIndex, 2).setValue(finalBirthDate);
+      sheet.getRange(userRowIndex, 3).setValue(finalGender);
+      sheet.getRange(userRowIndex, 4).setValue(registeredAt);
+      
+      writeLog(`[Sheet อัปเดตโปรไฟล์] User: ${userId} | BirthDate: ${finalBirthDate} | Gender: ${finalGender}`, "INFO");
+    } else {
+      // ถ้าไม่พบ ให้เพิ่มแถวใหม่
+      sheet.appendRow([userId.trim(), birthDate.trim(), gender.trim(), registeredAt]);
+      writeLog(`[Sheet เพิ่มโปรไฟล์ใหม่] User: ${userId} | BirthDate: ${birthDate} | Gender: ${gender}`, "INFO");
+    }
     return true;
   } catch (error) {
     writeLog("เกิดข้อผิดพลาดในการบันทึกโปรไฟล์ผู้ใช้: " + error.toString(), "EXCEPTION");
@@ -1331,4 +1392,50 @@ function extractBirthDate(event) {
   }
   
   return dateStr; // คืนค่าข้อมูลดิบตัวเดิมกรณีคลาดเคลื่อน
+}
+
+// ฟังก์ชันสกัดหาวันเกิดจากข้อความตัวอักษรธรรมดาที่พิมพ์ในแชท (เช่น 15/01/1988 หรือ 1988-01-15)
+function extractBirthDateFromString(text) {
+  if (!text) return "";
+  const cleanText = text.trim();
+  
+  // 1. ตรวจสอบรูปแบบ dd/MM/yyyy หรือ dd-MM-yyyy (เช่น 15/01/1988)
+  const dmyMatch = cleanText.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (dmyMatch) {
+    let day = dmyMatch[1];
+    let month = dmyMatch[2];
+    const year = dmyMatch[3];
+    
+    // เติมเลข 0 ข้างหน้าหากหลักเดียว
+    if (day.length === 1) day = "0" + day;
+    if (month.length === 1) month = "0" + month;
+    
+    // ตรวจสอบค่าความถูกต้องเบื้องต้น (เช่น วัน < 31, เดือน < 12)
+    const d = parseInt(day, 10);
+    const m = parseInt(month, 10);
+    const y = parseInt(year, 10);
+    if (d >= 1 && d <= 31 && m >= 1 && m <= 12 && y >= 1900 && y <= new Date().getFullYear()) {
+      return `${year}-${month}-${day}`;
+    }
+  }
+  
+  // 2. ตรวจสอบรูปแบบ yyyy/MM/dd หรือ yyyy-MM-dd (เช่น 1988-01-15)
+  const ymdMatch = cleanText.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
+  if (ymdMatch) {
+    const year = ymdMatch[1];
+    let month = ymdMatch[2];
+    let day = ymdMatch[3];
+    
+    if (day.length === 1) day = "0" + day;
+    if (month.length === 1) month = "0" + month;
+    
+    const d = parseInt(day, 10);
+    const m = parseInt(month, 10);
+    const y = parseInt(year, 10);
+    if (d >= 1 && d <= 31 && m >= 1 && m <= 12 && y >= 1900 && y <= new Date().getFullYear()) {
+      return `${year}-${month}-${day}`;
+    }
+  }
+  
+  return "";
 }
