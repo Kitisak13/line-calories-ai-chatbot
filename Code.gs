@@ -93,10 +93,24 @@ function doPost(e) {
     const event = eventParams.events[0];
     writeLog("ประเภทของ Event ที่ได้รับ: " + event.type, "INFO");
 
+    const userId = event.source && event.source.userId ? event.source.userId : "";
+    const replyToken = event.replyToken;
+
+    // 1. ตรวจสอบสถานะการบล็อกและการลงทะเบียนของผู้ใช้งาน (Fast Block Check & Single Load Optimization)
+    let userProfile = null;
+    if (userId) {
+      userProfile = getUserProfile(userId);
+      if (userProfile && userProfile.status === "blocked") {
+        writeLog(`[Blocked User Alert] UserID: ${userId} พยายามเข้าใช้งานบอทแต่โดนระงับสิทธิ์ -> สกัดการทำงาน`, "WARN");
+        if (replyToken) {
+          replyLineMessage(replyToken, "คุณไม่สามารถใช้งานได้ในขณะนี้ กรุณาติดต่อกลับที่ admin");
+        }
+        return ContentService.createTextOutput("OK").setMimeType(ContentService.MimeType.TEXT);
+      }
+    }
+
     if (event.type === "message" && event.message.type === "text") {
       const userMessage = event.message.text;
-      const replyToken = event.replyToken;
-      const userId = event.source && event.source.userId ? event.source.userId : "";
       
       writeLog(
         `ได้รับข้อความจากผู้ใช้: "${userMessage}" | UserID: ${userId} | Reply Token: ${replyToken}`,
@@ -108,8 +122,7 @@ function doPost(e) {
         return ContentService.createTextOutput("OK").setMimeType(ContentService.MimeType.TEXT);
       }
 
-      // 1. ตรวจสอบข้อมูลโปรไฟล์ผู้ใช้งานก่อน
-      const userProfile = getUserProfile(userId);
+      // 2. ตรวจสอบข้อมูลโปรไฟล์ผู้ใช้งานก่อน
       if (!userProfile || !userProfile.birthDate) {
         const gender = userProfile ? userProfile.gender : "";
         
@@ -144,7 +157,7 @@ function doPost(e) {
         return ContentService.createTextOutput("OK").setMimeType(ContentService.MimeType.TEXT);
       }
 
-      // 2. หากมีโปรไฟล์แล้ว ประมวลผลข้อความตามปกติ
+      // 3. หากมีโปรไฟล์แล้ว ประมวลผลข้อความตามปกติ
       let aiResponse = "";
       if (isSummaryRequest(userMessage)) {
         writeLog(`ตรวจพบคำสั่งขอสรุปแคลลอรี่รายวันสำหรับ User ID: ${userId}`, "INFO");
@@ -165,11 +178,9 @@ function doPost(e) {
         }
       }
 
-      // 3. ส่งข้อความตอบกลับไปยัง LINE Messaging API
+      // 4. ส่งข้อความตอบกลับไปยัง LINE Messaging API
       replyLineMessage(replyToken, aiResponse);
     } else if (event.type === "postback") {
-      const replyToken = event.replyToken;
-      const userId = event.source && event.source.userId ? event.source.userId : "";
       const postbackData = event.postback.data;
       const params = parseQueryString(postbackData);
       
@@ -897,7 +908,8 @@ function getUserProfile(userId) {
       return null;
     }
     
-    const data = sheet.getRange(2, 1, lastRow - 1, 3).getValues(); // ดึง UserID, BirthDate, Gender
+    // ดึง UserID, BirthDate, Gender, RegisteredAt, Status (ขยายช่วงการดึงข้อมูลเพิ่มเป็น 5 คอลัมน์)
+    const data = sheet.getRange(2, 1, lastRow - 1, 5).getValues();
     for (let i = 0; i < data.length; i++) {
       const row = data[i];
       if (String(row[0]).trim() === userId.trim()) {
@@ -912,7 +924,8 @@ function getUserProfile(userId) {
         return {
           userId: String(row[0]).trim(),
           birthDate: birthDateStr,
-          gender: String(row[2]).trim()
+          gender: String(row[2]).trim(),
+          status: row[4] ? String(row[4]).trim() : "accessed" // ปลอดภัย 100%: ถ้าคอลัมน์สิทธิ์ว่างเปล่า ให้แปลงเป็น accessed โดยอัตโนมัติ
         };
       }
     }
@@ -959,7 +972,7 @@ function saveUserProfile(userId, birthDate, gender) {
     
     if (userRowIndex !== -1) {
       // ถ้าพบข้อมูลเดิม ให้ทำการอัปเดตค่าเฉพาะฟิลด์ที่ส่งเข้ามา (หากส่งค่าว่าง ให้คงค่าเดิม ยกเว้นต้องการล้างค่า)
-      // คอลัมน์: 1=UserID, 2=BirthDate, 3=Gender, 4=RegisteredAt
+      // คอลัมน์: 1=UserID, 2=BirthDate, 3=Gender, 4=RegisteredAt, 5=Status
       
       const currentBirthDate = sheet.getRange(userRowIndex, 2).getValue();
       const currentGender = sheet.getRange(userRowIndex, 3).getValue();
@@ -971,11 +984,12 @@ function saveUserProfile(userId, birthDate, gender) {
       sheet.getRange(userRowIndex, 3).setValue(finalGender);
       sheet.getRange(userRowIndex, 4).setValue(registeredAt);
       
+      // การอัปเดตจะไม่ก้าวล่วงสถานะ Status ของผู้ใช้เพื่อป้องกันสิทธิ์หลุดลอย
       writeLog(`[Sheet อัปเดตโปรไฟล์] User: ${userId} | BirthDate: ${finalBirthDate} | Gender: ${finalGender}`, "INFO");
     } else {
-      // ถ้าไม่พบ ให้เพิ่มแถวใหม่
-      sheet.appendRow([userId.trim(), birthDate.trim(), gender.trim(), registeredAt]);
-      writeLog(`[Sheet เพิ่มโปรไฟล์ใหม่] User: ${userId} | BirthDate: ${birthDate} | Gender: ${gender}`, "INFO");
+      // ถ้าไม่พบ ให้เพิ่มแถวใหม่ พร้อมสถานะ accessed เป็นค่าเริ่มต้นลงในคอลัมน์ที่ 5
+      sheet.appendRow([userId.trim(), birthDate.trim(), gender.trim(), registeredAt, "accessed"]);
+      writeLog(`[Sheet เพิ่มโปรไฟล์ใหม่] User: ${userId} | BirthDate: ${birthDate} | Gender: ${gender} | Status: accessed`, "INFO");
     }
     return true;
   } catch (error) {

@@ -1,0 +1,4 @@
+# Ignore Notion-only documentation files
+Architecture.md
+Architexture.md
+artifacts/architecture.md
