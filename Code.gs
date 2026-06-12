@@ -162,24 +162,27 @@ function doPost(e) {
       if (isSummaryRequest(userMessage)) {
         writeLog(`ตรวจพบคำสั่งขอสรุปแคลลอรี่รายวันสำหรับ User ID: ${userId}`, "INFO");
         aiResponse = getTodayCaloriesSummary(userId, userProfile);
+        replyLineMessage(replyToken, aiResponse);
       } else {
         // เรียกใช้งาน Google Gemini API เพื่อประมวลผลข้อมูล
-        aiResponse = callGemini(userMessage);
-        writeLog(`คำตอบที่ได้จาก Gemini: "${aiResponse}"`, "INFO");
+        const aiResult = callGemini(userMessage);
+        writeLog(`ผลลัพธ์ที่ประมวลผลจาก Gemini: ` + JSON.stringify(aiResult), "INFO");
 
-        // บันทึกข้อมูลลง Google Sheet หากคำนวณแคลลอรี่สำเร็จ และเปลี่ยนการตอบกลับเป็น Flex Message
-        if (aiResponse.indexOf("Calories: ") === 0) {
-          const caloriesStr = aiResponse.replace("Calories: ", "").trim();
-          const caloriesNum = parseFloat(caloriesStr) || 0;
-          saveToSheet(userId, userMessage, caloriesNum);
-          
-          // แปลงการตอบกลับเป็น Flex Message ดีไซน์พรีเมียม
-          aiResponse = createFoodCalorieFlex(userMessage, caloriesNum);
+        if (aiResult.success) {
+          if (aiResult.isFood) {
+            // บันทึกข้อมูลลง Google Sheet หากเป็นเมนูอาหาร/เครื่องดื่มจริง และเปลี่ยนการตอบกลับเป็น Flex Message
+            saveToSheet(userId, userMessage, aiResult.calories);
+            aiResponse = createFoodCalorieFlex(userMessage, aiResult.calories);
+            replyLineMessage(replyToken, aiResponse);
+          } else {
+            // ไม่ใช่เมนูอาหาร/เครื่องดื่ม (ทักทาย หรือ พิมพ์มั่ว) -> ข้ามการบันทึกชีต ส่งข้อความแนะนำตัวธรรมดา
+            replyLineMessage(replyToken, aiResult.errorText);
+          }
+        } else {
+          // ในกรณีเชื่อมต่อระบบ AI ขัดข้องชั่วคราว
+          replyLineMessage(replyToken, aiResult.errorText);
         }
       }
-
-      // 4. ส่งข้อความตอบกลับไปยัง LINE Messaging API
-      replyLineMessage(replyToken, aiResponse);
     } else if (event.type === "postback") {
       const postbackData = event.postback.data;
       const params = parseQueryString(postbackData);
@@ -259,26 +262,29 @@ function callGemini(text) {
     }
 
     if (!GEMINI_API_KEY) {
-      writeLog(
-        "ไม่พบตัวแปร GEMINI_API_KEY ใน Script Properties กรุณาตั้งค่าใหม่",
-        "ERROR",
-      );
-      return "ขออภัยค่ะ บอทไม่พร้อมใช้งานเนื่องจากไม่ได้ตั้งค่า API Key สำหรับ AI";
+      writeLog("ไม่พบตัวแปร GEMINI_API_KEY ใน Script Properties", "ERROR");
+      return { success: false, errorText: "ขออภัยค่ะ บอทไม่พร้อมใช้งานเนื่องจากไม่ได้ตั้งค่า API Key สำหรับ AI" };
     }
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${GEMINI_API_KEY}`;
     const payload = {
-      contents: [{ parts: [{ text: "Food: " + text }] }],
+      contents: [{ parts: [{ text: "Input: " + text }] }],
       systemInstruction: {
         parts: [
           {
-            text: 'Estimate the calorie count of the specified food and respond strictly in this JSON format: { "Calories": 350 }. Do not write any conversational text, explanations, or code blocks. Return only raw, valid JSON.',
+            text: 'You are an expert nutritionist. Evaluate if the user input is a valid food or drink item. ' +
+                  'If it is a food or drink item, estimate its calorie count and respond strictly in this JSON format: ' +
+                  '{ "isFood": true, "Calories": 350 }. ' +
+                  'If it is not a food or drink item (such as gibberish, casual greetings, questions, or non-food topics), ' +
+                  'generate a polite and friendly response in Thai guiding the user to input a food or drink, and respond strictly in this JSON format: ' +
+                  '{ "isFood": false, "errorText": "กรุณาพิมพ์ระบุเฉพาะชื่อเมนูอาหารหรือเครื่องดื่มเพื่อคำนวณแคลอรี่นะคะ" }. ' +
+                  'Do not write any conversational text outside the JSON, markdown blocks, or explanations. Return only raw, valid JSON.',
           },
         ],
       },
       generationConfig: {
-        temperature: 0.1,
-        maxOutputTokens: 100,
+        temperature: 0.2,
+        maxOutputTokens: 150,
         responseMimeType: "application/json",
       },
     };
@@ -308,34 +314,31 @@ function callGemini(text) {
         const aiText = result.candidates[0].content.parts[0].text.trim();
         try {
           const jsonResponse = JSON.parse(aiText);
-          if (jsonResponse && typeof jsonResponse.Calories !== "undefined") {
-            return "Calories: " + jsonResponse.Calories;
-          }
+          const isFood = jsonResponse.isFood === true || jsonResponse.isFood === "true";
+          const calories = parseFloat(jsonResponse.Calories) || 0;
+          const errorText = jsonResponse.errorText || "ขออภัยค่ะ กรุณาพิมพ์ระบุเฉพาะชื่อเมนูอาหารหรือเครื่องดื่มเพื่อคำนวณแคลอรี่นะคะ";
+          
+          return {
+            success: true,
+            isFood: isFood,
+            calories: calories,
+            errorText: errorText
+          };
         } catch (e) {
-          writeLog("ไม่สามารถแปลงค่า JSON จาก AI ได้: " + e.toString(), "WARN");
+          writeLog("ไม่สามารถแปลงค่า JSON จาก AI ได้: " + e.toString() + " | AI Text: " + aiText, "WARN");
+          return { success: false, errorText: "ขออภัยค่ะ ระบบประมวลผลข้อความขัดข้องชั่วคราว กรุณาลองใหม่อีกครั้งนะคะ" };
         }
-        return aiText;
       } else {
-        writeLog(
-          "โครงสร้างของคำตอบ JSON ไม่เป็นไปตามคาด หรือถูกบล็อกจาก Safety Filters: " +
-            responseText,
-          "WARN",
-        );
-        return "ขออภัยค่ะ เมนูนี้ระบบไม่สามารถวิเคราะห์ข้อมูลแคลอรีได้";
+        writeLog("โครงสร้างของคำตอบ JSON ไม่เป็นไปตามคาด หรือถูกบล็อกจาก Safety Filters: " + responseText, "WARN");
+        return { success: false, errorText: "ขออภัยค่ะ ระบบไม่สามารถตรวจสอบข้อมูลความปลอดภัยของเมนูนี้ได้" };
       }
     } else {
-      writeLog(
-        `การเรียกใช้งานผิดพลาด รหัสสถานะ ${responseCode} | ข้อมูลข้อผิดพลาด: ${responseText}`,
-        "ERROR",
-      );
-      return `ขออภัยค่ะ ระบบประมวลผลข้อความขัดข้อง (Gemini API Error Code: ${responseCode})`;
+      writeLog(`การเรียกใช้งานผิดพลาด รหัสสถานะ ${responseCode} | ข้อมูลข้อผิดพลาด: ${responseText}`, "ERROR");
+      return { success: false, errorText: "ขออภัยค่ะ ระบบประมวลผลความรู้โภชนาการขัดข้อง (Gemini API Error)" };
     }
   } catch (error) {
-    writeLog(
-      "เกิดข้อผิดพลาดในการเชื่อมโยงเครือข่ายของ Gemini: " + error.toString(),
-      "EXCEPTION",
-    );
-    return "ขออภัยค่ะ ระบบไม่สามารถเชื่อมต่อกับฐานข้อมูลโภชนาการได้ในขณะนี้";
+    writeLog("เกิดข้อผิดพลาดในการเชื่อมโยงเครือข่ายของ Gemini: " + error.toString(), "EXCEPTION");
+    return { success: false, errorText: "ขออภัยค่ะ ไม่สามารถเชื่อมต่อระบบวิเคราะห์แคลอรีได้ในขณะนี้" };
   }
 }
 
