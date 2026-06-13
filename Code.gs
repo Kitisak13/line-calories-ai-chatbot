@@ -163,6 +163,10 @@ function doPost(e) {
         writeLog(`ตรวจพบคำสั่งขอสรุปแคลลอรี่รายวันสำหรับ User ID: ${userId}`, "INFO");
         aiResponse = getTodayCaloriesSummary(userId, userProfile);
         replyLineMessage(replyToken, aiResponse);
+      } else if (isBurnRequest(userMessage)) {
+        writeLog(`ตรวจพบคำสั่งขอคำแนะนำการเผาผลาญแคลส่วนเกินสำหรับ User ID: ${userId}`, "INFO");
+        const burnAdviceCard = getTodayBurnAdvice(userId, userProfile);
+        replyLineMessage(replyToken, burnAdviceCard);
       } else {
         // เรียกใช้งาน Google Gemini API เพื่อประมวลผลข้อมูล
         const aiResult = callGemini(userMessage);
@@ -485,69 +489,17 @@ function saveToSheet(userId, foodMenu, calories) {
 // ฟังก์ชันดึงและสรุปแคลลอรี่ที่ทานไปทั้งหมดในวันนี้ของ User ID นั้นๆ
 function getTodayCaloriesSummary(userId, userProfile) {
   try {
-    const scriptProperties = PropertiesService.getScriptProperties();
-    const sheetId = scriptProperties.getProperty("GOOGLE_SHEET");
-    if (!sheetId) {
-      writeLog("ไม่พบตัวแปร GOOGLE_SHEET ใน Script Properties", "ERROR");
-      return "ขออภัยค่ะ บอทไม่สามารถเชื่อมต่อฐานข้อมูลได้เนื่องจากขาดการตั้งค่า GOOGLE_SHEET";
+    const data = getTodayCaloriesData(userId, userProfile);
+    if (!data) {
+      return "ขออภัยค่ะ ระบบไม่สามารถดึงข้อมูลแคลลอรี่และโปรไฟล์ส่วนตัวของคุณได้ในขณะนี้";
     }
 
-    const spreadsheet = SpreadsheetApp.openById(sheetId.trim());
-    const sheet = spreadsheet.getSheetByName("MealLogs");
-    if (!sheet) {
-      writeLog("ไม่พบแผ่นงานชื่อ 'MealLogs' ใน Google Sheets", "ERROR");
-      return "ขออภัยค่ะ ไม่พบตารางประวัติข้อมูลอาหาร (MealLogs)";
-    }
-
-    const lastRow = sheet.getLastRow();
-    
-    // ดึงค่าเป้าหมายแคลลอรี่สูงสุดจำเพาะบุคคล
-    const age = calculateAge(userProfile.birthDate);
-    const maxCalories = getMaxCalories(age, userProfile.gender);
-
-    if (lastRow <= 1) {
-      return `วันนี้คุณยังไม่ได้บันทึกเมนูอาหารเลยค่ะ! เริ่มต้นพิมพ์ชื่อเมนูอาหารที่ทานเพื่อสะสมให้ถึงเป้าหมายรายวันของคุณที่ ${maxCalories} kcal ได้เลยนะคะ 🍽️`;
-    }
-
-    const now = new Date();
-    const todayStr = Utilities.formatDate(now, "Asia/Bangkok", "yyyy-MM-dd");
-    
-    // ดึงข้อมูลทั้งหมดจากแถวที่ 2 เป็นต้นไป (คอลัมน์ A ถึง E)
-    const data = sheet.getRange(2, 1, lastRow - 1, 5).getValues();
-    
-    let totalCalories = 0;
-    let todayMeals = [];
-    
-    for (let i = 0; i < data.length; i++) {
-      const row = data[i];
-      const dateVal = row[1];       // คอลัมน์ B: Date
-      const userVal = row[2];       // คอลัมน์ C: UserID
-      const foodVal = row[3];       // คอลัมน์ D: FoodMenu
-      const calVal = parseFloat(row[4]) || 0; // คอลัมน์ E: Calories
-      
-      // แปลงประเภทวันที่เพื่อรองรับความเสถียรในการเปรียบเทียบเชิงอักขระ
-      let rowDateStr = "";
-      if (dateVal instanceof Date) {
-        rowDateStr = Utilities.formatDate(dateVal, "Asia/Bangkok", "yyyy-MM-dd");
-      } else {
-        rowDateStr = String(dateVal).trim();
-      }
-      
-      if (userVal === userId && rowDateStr === todayStr) {
-        totalCalories += calVal;
-        todayMeals.push({
-          menu: foodVal,
-          calories: calVal
-        });
-      }
-    }
-    
-    if (todayMeals.length === 0) {
-      return `วันนี้คุณยังไม่ได้บันทึกเมนูอาหารเลยค่ะ! เริ่มต้นพิมพ์ชื่อเมนูอาหารที่ทานเพื่อสะสมให้ถึงเป้าหมายรายวันของคุณที่ ${maxCalories} kcal ได้เลยนะคะ 🍽️`;
+    if (data.todayMeals.length === 0) {
+      return `วันนี้คุณยังไม่ได้บันทึกเมนูอาหารเลยค่ะ! เริ่มต้นพิมพ์ชื่อเมนูอาหารที่ทานเพื่อสะสมให้ถึงเป้าหมายรายวันของคุณที่ ${data.maxCalories} kcal ได้เลยนะคะ 🍽️`;
     }
     
     // คืนค่ารูปแบบ Flex Message ดีไซน์พรีเมียมส่วนบุคคล
-    return createSummaryFlex(todayMeals, totalCalories, maxCalories);
+    return createSummaryFlex(data.todayMeals, data.totalCalories, data.maxCalories);
   } catch (error) {
     writeLog("เกิดข้อผิดพลาดในการดึงข้อมูลจากชีต: " + error.toString(), "EXCEPTION");
     sendLogsEmail();
@@ -1457,4 +1409,373 @@ function extractBirthDateFromString(text) {
   }
   
   return "";
+}
+
+// ฟังก์ชันตรวจสอบความตั้งใจของผู้ใช้ (ว่าเป็นการขอแนะนำการเผาผลาญ/ออกกำลังกายออกแคลลอรี่ส่วนเกินหรือไม่)
+function isBurnRequest(message) {
+  if (!message) return false;
+  const cleaned = message.trim().toLowerCase();
+  
+  const keywords = [
+    "กินเกิน burn ยังไง",
+    "กินเกิน เบิร์นยังไง",
+    "เบิร์นยังไง",
+    "burn ยังไง",
+    "ออกกำลังกายลดแคล",
+    "กินเกินทำไง",
+    "ช่วยเบิร์นแคล",
+    "วิธีลดแคลเกิน",
+    "ออกกำลังกายลดแคลลอรี่"
+  ];
+  
+  for (let i = 0; i < keywords.length; i++) {
+    if (cleaned.indexOf(keywords[i]) !== -1) {
+      return true;
+    }
+  }
+  
+  const regex = /กินเกิน.*เบิร์น|กินเกิน.*burn|เบิร์น.*ยังไง|burn.*ยังไง/;
+  return regex.test(cleaned);
+}
+
+// ฟังก์ชันร่วมดึงยอดแคลลอรี่สะสมและเป้าหมายของวันนี้
+function getTodayCaloriesData(userId, userProfile) {
+  try {
+    const scriptProperties = PropertiesService.getScriptProperties();
+    const sheetId = scriptProperties.getProperty("GOOGLE_SHEET");
+    if (!sheetId) {
+      writeLog("ไม่พบตัวแปร GOOGLE_SHEET ใน Script Properties", "ERROR");
+      return null;
+    }
+
+    const spreadsheet = SpreadsheetApp.openById(sheetId.trim());
+    const sheet = spreadsheet.getSheetByName("MealLogs");
+    if (!sheet) {
+      writeLog("ไม่พบแผ่นงานชื่อ 'MealLogs' ใน Google Sheets", "ERROR");
+      return null;
+    }
+
+    const lastRow = sheet.getLastRow();
+    const age = calculateAge(userProfile.birthDate);
+    const maxCalories = getMaxCalories(age, userProfile.gender);
+
+    if (lastRow <= 1) {
+      return { totalCalories: 0, todayMeals: [], maxCalories: maxCalories, age: age };
+    }
+
+    const now = new Date();
+    const todayStr = Utilities.formatDate(now, "Asia/Bangkok", "yyyy-MM-dd");
+    const data = sheet.getRange(2, 1, lastRow - 1, 5).getValues();
+    
+    let totalCalories = 0;
+    let todayMeals = [];
+    
+    for (let i = 0; i < data.length; i++) {
+      const row = data[i];
+      const dateVal = row[1];
+      const userVal = row[2];
+      const foodVal = row[3];
+      const calVal = parseFloat(row[4]) || 0;
+      
+      let rowDateStr = "";
+      if (dateVal instanceof Date) {
+        rowDateStr = Utilities.formatDate(dateVal, "Asia/Bangkok", "yyyy-MM-dd");
+      } else {
+        rowDateStr = String(dateVal).trim();
+      }
+      
+      if (userVal === userId && rowDateStr === todayStr) {
+        totalCalories += calVal;
+        todayMeals.push({
+          menu: foodVal,
+          calories: calVal
+        });
+      }
+    }
+    
+    return { totalCalories: totalCalories, todayMeals: todayMeals, maxCalories: maxCalories, age: age };
+  } catch (error) {
+    writeLog("เกิดข้อผิดพลาดใน getTodayCaloriesData: " + error.toString(), "EXCEPTION");
+    return null;
+  }
+}
+
+// ฟังก์ชันหลักคำนวณและดึงคำแนะนำการเผาผลาญแคลส่วนเกิน
+function getTodayBurnAdvice(userId, userProfile) {
+  try {
+    const data = getTodayCaloriesData(userId, userProfile);
+    if (!data) {
+      return "ขออภัยค่ะ ระบบไม่สามารถดึงข้อมูลแคลลอรี่และโปรไฟล์ส่วนตัวของคุณได้ในขณะนี้";
+    }
+    
+    const exceededCalories = Math.ceil(data.totalCalories - data.maxCalories);
+    
+    if (exceededCalories <= 0) {
+      // แคลลอรี่ยังไม่เกินเป้าหมาย
+      return `วันนี้คุณทานสะสมไป ${data.totalCalories} kcal จากขีดจำกัดสูงสุด ${data.maxCalories} kcal (ยังไม่เกินโควต้าค่ะ) จึงยังไม่มีแคลลอรี่ส่วนเกินที่ต้องเผาผลาญเป็นพิเศษนะคะ แนะนำเน้นออกกำลังกายเบาๆ เพื่อสุขภาพที่ดีค่ะ! 🟢💪`;
+    }
+    
+    // ส่งโปรไฟล์ให้ Gemini คำนวณวิธีเผาผลาญ
+    const burnAdvice = callGeminiForBurnAdvice(data.age, userProfile.gender, exceededCalories);
+    
+    if (burnAdvice.success) {
+      // คืนค่ารูปแบบ Flex Message ดีไซน์พรีเมียมส่วนบุคคล
+      return createBurnAdviceFlex(data.age, userProfile.gender, exceededCalories, burnAdvice.exercises);
+    } else {
+      return `วันนี้คุณทานเกินเป้าหมายรายวันไปแล้ว ${exceededCalories} kcal นะคะ! (ระบบการออกแบบแผนเบิร์นขัดข้องชั่วคราว) แนะนำเน้นเดินเร็วหรือจ๊อกกิ้งเบาๆ 30-45 นาทีเพื่อช่วยเร่งเผาผลาญพลังงานเบื้องต้นก่อนนะคะ 🏃‍♂️`;
+    }
+  } catch (error) {
+    writeLog("เกิดข้อผิดพลาดในการคำนวณแผนการเบิร์น: " + error.toString(), "EXCEPTION");
+    return "ขออภัยค่ะ เกิดข้อผิดพลาดในการคำนวณคำแนะนำการเบิร์นพลังงานของวันนี้";
+  }
+}
+
+// ฟังก์ชันดึงวิธีออกกำลังกาย 3 รูปแบบจาก Gemini API อิงเกณฑ์บุคคล
+function callGeminiForBurnAdvice(age, gender, exceededCalories) {
+  try {
+    const scriptProperties = PropertiesService.getScriptProperties();
+    let GEMINI_API_KEY = scriptProperties.getProperty("GEMINI_API_KEY");
+    if (GEMINI_API_KEY) {
+      GEMINI_API_KEY = GEMINI_API_KEY.trim();
+    }
+    if (!GEMINI_API_KEY) {
+      return { success: false };
+    }
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${GEMINI_API_KEY}`;
+    
+    const promptText = `User Profile: Age ${age} years old, Gender ${gender}. Today, they have eaten an excess of ${exceededCalories} kcal beyond their daily health limit. Generate exactly 3 personalized physical exercises or activities suitable for their age, gender, and the exact calories to burn (${exceededCalories} kcal). Provide durations and details in Thai.`;
+    
+    const payload = {
+      contents: [{ parts: [{ text: promptText }] }],
+      systemInstruction: {
+        parts: [
+          {
+            text: 'You are an expert fitness coach and personal trainer. Create exactly 3 customized exercise options to burn off the specified excess calories. ' +
+                  'Tailor the difficulty, impact level, and duration to the user\'s age and gender (e.g. recommend low-impact activities for older users and higher intensity for younger users). ' +
+                  'Respond strictly in this JSON format:\n' +
+                  '{\n' +
+                  '  "exercises": [\n' +
+                  '    {\n' +
+                  '      "name": "Exercise name in Thai",\n' +
+                  '      "duration": "Duration in Thai (e.g. 45 นาที)",\n' +
+                  '      "detail": "A brief encouraging description in Thai, explaining the distance/speed or intensity suitable for their age"\n' +
+                  '    }\n' +
+                  '  ]\n' +
+                  '}\n' +
+                  'Do not write any markdown code blocks, explanations, or conversational text outside the JSON. Return only raw, valid JSON.',
+          },
+        ],
+      },
+      generationConfig: {
+        temperature: 0.3,
+        maxOutputTokens: 500,
+        responseMimeType: "application/json",
+      },
+    };
+
+    const options = {
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+    };
+
+    writeLog("กำลังเรียก Gemini เพื่อคำนวณวิธีการออกกำลังกาย...", "INFO");
+    const response = UrlFetchApp.fetch(url, options);
+    const responseCode = response.getResponseCode();
+    const responseText = response.getContentText();
+
+    if (responseCode === 200) {
+      const result = JSON.parse(responseText);
+      if (
+        result.candidates &&
+        result.candidates.length > 0 &&
+        result.candidates[0].content &&
+        result.candidates[0].content.parts
+      ) {
+        const aiText = result.candidates[0].content.parts[0].text.trim();
+        try {
+          const jsonResponse = JSON.parse(aiText);
+          if (jsonResponse && Array.isArray(jsonResponse.exercises)) {
+            return { success: true, exercises: jsonResponse.exercises };
+          }
+        } catch (e) {
+          writeLog("ไม่สามารถพาร์ส JSON แนะนำการออกกำลังกายได้: " + e.toString() + " | AI Text: " + aiText, "WARN");
+        }
+      }
+    }
+    return { success: false };
+  } catch (error) {
+    writeLog("เกิดข้อผิดพลาดรุนแรงใน callGeminiForBurnAdvice: " + error.toString(), "EXCEPTION");
+    return { success: false };
+  }
+}
+
+// ฟังก์ชันสร้างการ์ด Flex Message แนะนำการเผาผลาญพลังงาน (ดีไซน์พรีเมียมสีแดงส้ม)
+function createBurnAdviceFlex(age, gender, exceededCalories, exercises) {
+  let exerciseComponents = [];
+  
+  for (let i = 0; i < exercises.length; i++) {
+    const ex = exercises[i];
+    exerciseComponents.push({
+      "type": "box",
+      "layout": "vertical",
+      "contents": [
+        {
+          "type": "box",
+          "layout": "horizontal",
+          "contents": [
+            {
+              "type": "text",
+              "text": `🔥 วิธีที่ ${i + 1}: ${ex.name}`,
+              "weight": "bold",
+              "size": "sm",
+              "color": "#333333",
+              "flex": 4,
+              "wrap": true
+            },
+            {
+              "type": "text",
+              "text": ex.duration,
+              "weight": "bold",
+              "size": "sm",
+              "color": "#FF4B2B",
+              "align": "end",
+              "flex": 2
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "text": ex.detail,
+          "size": "xs",
+          "color": "#666666",
+          "wrap": true,
+          "margin": "xs"
+        }
+      ],
+      "margin": "md"
+    });
+    
+    if (i < exercises.length - 1) {
+      exerciseComponents.push({
+        "type": "separator",
+        "margin": "md",
+        "color": "#F0F0F0"
+      });
+    }
+  }
+
+  return {
+    "type": "flex",
+    "altText": `คำแนะนำการเผาผลาญพลังงานส่วนเกิน: +${exceededCalories} kcal`,
+    "contents": {
+      "type": "bubble",
+      "header": {
+        "type": "box",
+        "layout": "vertical",
+        "contents": [
+          {
+            "type": "text",
+            "text": "แผนการเผาผลาญพลังงานวันนี้ 🏃‍♀️",
+            "weight": "bold",
+            "color": "#FFFFFF",
+            "size": "sm",
+            "align": "center"
+          }
+        ],
+        "background": {
+          "type": "linearGradient",
+          "angle": "135deg",
+          "startColor": "#FF416C",
+          "endColor": "#FF4B2B"
+        },
+        "paddingAll": "md"
+      },
+      "body": {
+        "type": "box",
+        "layout": "vertical",
+        "contents": [
+          {
+            "type": "text",
+            "text": "แคลลอรี่ส่วนเกินของคุณในวันนี้:",
+            "size": "xs",
+            "color": "#8C8C8C"
+          },
+          {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+              {
+                "type": "text",
+                "text": `+${exceededCalories} kcal`,
+                "size": "4xl",
+                "weight": "bold",
+                "color": "#FF4B2B",
+                "align": "center"
+              },
+              {
+                "type": "text",
+                "text": `เกณฑ์วิเคราะห์เฉพาะบุคคล: อายุ ${age} ปี (${gender})`,
+                "size": "xs",
+                "color": "#8C8C8C",
+                "align": "center",
+                "margin": "xs"
+              }
+            ],
+            "margin": "md"
+          },
+          {
+            "type": "separator",
+            "margin": "lg"
+          },
+          {
+            "type": "text",
+            "text": "🏃‍♂️ 3 กิจกรรมออกกำลังกายที่แนะนำสำหรับคุณ:",
+            "size": "xs",
+            "weight": "bold",
+            "color": "#8C8C8C",
+            "margin": "lg"
+          },
+          {
+            "type": "box",
+            "layout": "vertical",
+            "contents": exerciseComponents,
+            "margin": "md"
+          },
+          {
+            "type": "separator",
+            "margin": "lg"
+          },
+          {
+            "type": "box",
+            "layout": "vertical",
+            "contents": [
+              {
+                "type": "text",
+                "text": "💡 เคล็ดลับเพิ่มเติมจากบอท:",
+                "weight": "bold",
+                "size": "xs",
+                "color": "#FF4B2B"
+              },
+              {
+                "type": "text",
+                "text": "การออกกำลังกายช่วยรักษาดุลยภาพพลังงานที่ดีของร่างกาย การดื่มน้ำเปล่าให้พอเพียงก่อนและหลังการออกกำลังกายจะช่วยเร่งอัตราการเผาผลาญพลังงานได้ดียิ่งขึ้นนะคะ สู้ๆ ค่ะ! ✌️",
+                "size": "xs",
+                "color": "#666666",
+                "wrap": true,
+                "margin": "xs"
+              }
+            ],
+            "margin": "lg",
+            "paddingAll": "md",
+            "backgroundColor": "#FFF5F5",
+            "cornerRadius": "sm"
+          }
+        ],
+        "paddingAll": "lg"
+      }
+    }
+  };
 }
