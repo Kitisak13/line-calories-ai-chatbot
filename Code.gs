@@ -175,8 +175,8 @@ function doPost(e) {
         if (aiResult.success) {
           if (aiResult.isFood) {
             // บันทึกข้อมูลลง Google Sheet หากเป็นเมนูอาหาร/เครื่องดื่มจริง และเปลี่ยนการตอบกลับเป็น Flex Message
-            saveToSheet(userId, userMessage, aiResult.calories);
-            aiResponse = createFoodCalorieFlex(userMessage, aiResult.calories);
+            saveToSheet(userId, aiResult.foods);
+            aiResponse = createFoodCalorieFlex(aiResult.foods);
             replyLineMessage(replyToken, aiResponse);
           } else {
             // ไม่ใช่เมนูอาหาร/เครื่องดื่ม (ทักทาย หรือ พิมพ์มั่ว) -> ข้ามการบันทึกชีต ส่งข้อความแนะนำตัวธรรมดา
@@ -276,19 +276,28 @@ function callGemini(text) {
       systemInstruction: {
         parts: [
           {
-            text: 'You are an expert nutritionist. Evaluate if the user input is a valid food or drink item. ' +
-                  'If it is a food or drink item, estimate its calorie count and respond strictly in this JSON format: ' +
-                  '{ "isFood": true, "Calories": 350 }. ' +
-                  'If it is not a food or drink item (such as gibberish, casual greetings, questions, or non-food topics), ' +
-                  'generate a polite and friendly response in Thai guiding the user to input a food or drink, and respond strictly in this JSON format: ' +
-                  '{ "isFood": false, "errorText": "กรุณาพิมพ์ระบุเฉพาะชื่อเมนูอาหารหรือเครื่องดื่มเพื่อคำนวณแคลอรี่นะคะ" }. ' +
-                  'Do not write any conversational text outside the JSON, markdown blocks, or explanations. Return only raw, valid JSON.',
+            text: 'You are an expert nutritionist. Evaluate if the user input contains any valid food or drink items (can be a single item or multiple items in one message). ' +
+                  'If it contains valid food or drink items, estimate the calorie count for each identified item and respond strictly in this JSON format:\n' +
+                  '{\n' +
+                  '  "isFood": true,\n' +
+                  '  "foods": [\n' +
+                  '    { "name": "Food name 1 in Thai", "calories": 350 },\n' +
+                  '    { "name": "Food name 2 in Thai", "calories": 150 }\n' +
+                  '  ]\n' +
+                  '}\n' +
+                  'If it does not contain any food or drink items (such as casual greetings, questions, or unrelated topics), ' +
+                  'generate a polite and friendly response in Thai guiding the user to input food or drink items, and respond strictly in this JSON format:\n' +
+                  '{\n' +
+                  '  "isFood": false,\n' +
+                  '  "errorText": "กรุณาพิมพ์ระบุชื่อเมนูอาหารหรือเครื่องดื่มเพื่อคำนวณแคลอรี่นะคะ"\n' +
+                  '}\n' +
+                  'Do not write any conversational text outside the JSON. Return only raw, valid JSON.',
           },
         ],
       },
       generationConfig: {
         temperature: 0.2,
-        maxOutputTokens: 150,
+        maxOutputTokens: 400,
         responseMimeType: "application/json",
       },
     };
@@ -319,13 +328,34 @@ function callGemini(text) {
         try {
           const jsonResponse = JSON.parse(aiText);
           const isFood = jsonResponse.isFood === true || jsonResponse.isFood === "true";
-          const calories = parseFloat(jsonResponse.Calories) || 0;
-          const errorText = jsonResponse.errorText || "ขออภัยค่ะ กรุณาพิมพ์ระบุเฉพาะชื่อเมนูอาหารหรือเครื่องดื่มเพื่อคำนวณแคลอรี่นะคะ";
+          let foods = [];
+          
+          if (isFood) {
+            if (Array.isArray(jsonResponse.foods)) {
+              foods = jsonResponse.foods.map(f => ({
+                name: String(f.name || "").trim(),
+                calories: parseFloat(f.calories) || 0
+              })).filter(f => f.name !== "");
+            } else if (jsonResponse.Calories) {
+              // รองรับโครงสร้างข้อมูลแบบเดิมเพื่อความปลอดภัย (Backward Compatibility)
+              foods = [{
+                name: text.trim(),
+                calories: parseFloat(jsonResponse.Calories) || 0
+              }];
+            } else {
+              foods = [{
+                name: text.trim(),
+                calories: 0
+              }];
+            }
+          }
+          
+          const errorText = jsonResponse.errorText || "ขออภัยค่ะ กรุณาพิมพ์ระบุชื่อเมนูอาหารหรือเครื่องดื่มเพื่อคำนวณแคลอรี่นะคะ";
           
           return {
             success: true,
             isFood: isFood,
-            calories: calories,
+            foods: foods,
             errorText: errorText
           };
         } catch (e) {
@@ -453,7 +483,7 @@ function isSummaryRequest(message) {
 }
 
 // ฟังก์ชันบันทึกรายการอาหารและแคลลอรี่ลง Google Sheet
-function saveToSheet(userId, foodMenu, calories) {
+function saveToSheet(userId, foods) {
   try {
     const scriptProperties = PropertiesService.getScriptProperties();
     const sheetId = scriptProperties.getProperty("GOOGLE_SHEET");
@@ -475,11 +505,14 @@ function saveToSheet(userId, foodMenu, calories) {
     // วันที่ไทยรูปแบบสั้นสำหรับสืบค้น เช่น 2026-05-25
     const dateOnly = Utilities.formatDate(now, "Asia/Bangkok", "yyyy-MM-dd");
     
-    const calNumber = parseFloat(calories) || 0;
-    
-    // เพิ่มแถวข้อมูลลงใน Google Sheet
-    sheet.appendRow([timestamp, dateOnly, userId, foodMenu, calNumber]);
-    writeLog(`[Sheet บันทึกสำเร็จ] User: ${userId} | Menu: ${foodMenu} | Calorie: ${calNumber} kcal`, "INFO");
+    for (let i = 0; i < foods.length; i++) {
+      const food = foods[i];
+      const calNumber = parseFloat(food.calories) || 0;
+      
+      // เพิ่มแถวข้อมูลลงใน Google Sheet
+      sheet.appendRow([timestamp, dateOnly, userId, food.name, calNumber]);
+      writeLog(`[Sheet บันทึกสำเร็จ] User: ${userId} | Menu: ${food.name} | Calorie: ${calNumber} kcal`, "INFO");
+    }
   } catch (error) {
     writeLog("เกิดข้อผิดพลาดรุนแรงในการบันทึกข้อมูลลง Google Sheet: " + error.toString(), "EXCEPTION");
     sendLogsEmail();
@@ -546,10 +579,46 @@ function testSheetAccess() {
 }
 
 // ฟังก์ชันสร้างกล่องข้อความ Flex Message สำหรับคำนวณแคลลอรี่รายเมนูอาหาร
-function createFoodCalorieFlex(foodMenu, calories) {
+function createFoodCalorieFlex(foods) {
+  let foodComponents = [];
+  let totalCalories = 0;
+  let foodNames = [];
+  
+  for (let i = 0; i < foods.length; i++) {
+    const f = foods[i];
+    const c = parseFloat(f.calories) || 0;
+    totalCalories += c;
+    foodNames.push(f.name);
+    
+    foodComponents.push({
+      "type": "box",
+      "layout": "horizontal",
+      "contents": [
+        {
+          "type": "text",
+          "text": `• ${f.name}`,
+          "size": "sm",
+          "color": "#333333",
+          "flex": 4,
+          "wrap": true
+        },
+        {
+          "type": "text",
+          "text": `${c} kcal`,
+          "size": "sm",
+          "color": "#E65C00",
+          "align": "end",
+          "weight": "bold",
+          "flex": 2
+        }
+      ],
+      "margin": "md"
+    });
+  }
+  
   return {
     "type": "flex",
-    "altText": `ผลการวิเคราะห์: ${foodMenu} มีค่าพลังงาน ${calories} kcal`,
+    "altText": `ผลการวิเคราะห์แคลลอรี่: ${foodNames.join(", ")} รวม ${totalCalories} kcal`,
     "contents": {
       "type": "bubble",
       "header": {
@@ -579,22 +648,20 @@ function createFoodCalorieFlex(foodMenu, calories) {
         "contents": [
           {
             "type": "text",
-            "text": "เมนูอาหารที่คุณรับประทาน:",
+            "text": "รายการอาหารที่คุณรับประทาน:",
             "size": "xs",
-            "color": "#8C8C8C"
+            "color": "#8C8C8C",
+            "weight": "bold"
           },
           {
-            "type": "text",
-            "text": foodMenu,
-            "weight": "bold",
-            "size": "lg",
-            "color": "#333333",
-            "wrap": true,
-            "margin": "xs"
+            "type": "box",
+            "layout": "vertical",
+            "contents": foodComponents,
+            "margin": "md"
           },
           {
             "type": "separator",
-            "margin": "md"
+            "margin": "lg"
           },
           {
             "type": "box",
@@ -602,7 +669,7 @@ function createFoodCalorieFlex(foodMenu, calories) {
             "contents": [
               {
                 "type": "text",
-                "text": String(calories),
+                "text": String(Math.round(totalCalories)),
                 "size": "4xl",
                 "weight": "bold",
                 "color": "#E65C00",
@@ -610,15 +677,15 @@ function createFoodCalorieFlex(foodMenu, calories) {
               },
               {
                 "type": "text",
-                "text": "kcal",
-                "size": "sm",
+                "text": "kcal รวมมื้อนี้",
+                "size": "xs",
                 "weight": "bold",
                 "color": "#8C8C8C",
                 "align": "center",
                 "margin": "none"
               }
             ],
-            "margin": "md"
+            "margin": "lg"
           },
           {
             "type": "text",
