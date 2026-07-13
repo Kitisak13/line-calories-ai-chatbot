@@ -661,15 +661,15 @@ function createFoodCalorieFlex(foods) {
             ],
             "backgroundColor": "#D8F3DC",
             "paddingAll": "sm",
-            "cornerRadius": "md",
-            "marginBottom": "md"
+            "cornerRadius": "md"
           },
           {
             "type": "text",
             "text": "รายการอาหารที่คุณรับประทาน:",
             "size": "xs",
             "color": "#8C8C8C",
-            "weight": "bold"
+            "weight": "bold",
+            "margin": "md"
           },
           {
             "type": "box",
