@@ -647,6 +647,24 @@ function createFoodCalorieFlex(foods) {
         "layout": "vertical",
         "contents": [
           {
+            "type": "box",
+            "layout": "horizontal",
+            "contents": [
+              {
+                "type": "text",
+                "text": "✅ บันทึกเมนูอาหารเรียบร้อยแล้ว",
+                "size": "xs",
+                "color": "#2D6A4F",
+                "weight": "bold",
+                "align": "center"
+              }
+            ],
+            "backgroundColor": "#D8F3DC",
+            "paddingAll": "sm",
+            "cornerRadius": "md",
+            "marginBottom": "md"
+          },
+          {
             "type": "text",
             "text": "รายการอาหารที่คุณรับประทาน:",
             "size": "xs",
@@ -668,54 +686,35 @@ function createFoodCalorieFlex(foods) {
             "layout": "vertical",
             "contents": [
               {
-                "type": "text",
-                "text": String(Math.round(totalCalories)),
-                "size": "4xl",
-                "weight": "bold",
-                "color": "#E65C00",
-                "align": "center"
-              },
-              {
-                "type": "text",
-                "text": "kcal รวมมื้อนี้",
-                "size": "xs",
-                "weight": "bold",
-                "color": "#8C8C8C",
-                "align": "center",
-                "margin": "none"
+                "type": "box",
+                "layout": "vertical",
+                "contents": [
+                  {
+                    "type": "text",
+                    "text": String(Math.round(totalCalories)),
+                    "size": "4xl",
+                    "weight": "bold",
+                    "color": "#E65C00",
+                    "align": "center"
+                  },
+                  {
+                    "type": "text",
+                    "text": "kcal รวมมื้อนี้",
+                    "size": "xs",
+                    "weight": "bold",
+                    "color": "#8C8C8C",
+                    "align": "center"
+                  }
+                ],
+                "backgroundColor": "#FFF5EC",
+                "paddingAll": "md",
+                "cornerRadius": "md"
               }
             ],
             "margin": "lg"
-          },
-          {
-            "type": "text",
-            "text": "บันทึกลงในชีตของคุณเรียบร้อยแล้วค่ะ! 📝",
-            "size": "xs",
-            "color": "#999999",
-            "align": "center",
-            "margin": "md"
           }
         ],
         "paddingAll": "lg"
-      },
-      "footer": {
-        "type": "box",
-        "layout": "vertical",
-        "spacing": "sm",
-        "contents": [
-          {
-            "type": "button",
-            "style": "primary",
-            "color": "#E65C00",
-            "height": "sm",
-            "action": {
-              "type": "message",
-              "label": "📊 สรุปแคลรวมวันนี้",
-              "text": "วันนี้กินไปกี่แคล"
-            }
-          }
-        ],
-        "paddingAll": "md"
       }
     }
   };
